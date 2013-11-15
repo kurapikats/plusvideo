@@ -67,7 +67,7 @@ class S3Uploader
      *
      * @return mixed url generated S3 url or false on failure
      */
-    public function uploadFile($filename, $remoteDirectory = "", $prefix = "a-")
+    public function uploadFile($filename, $remoteDirectory = "")
     {
         if (file_exists($filename)) {
 
@@ -75,10 +75,9 @@ class S3Uploader
             $basename = pathinfo($filename)['basename'];
 
             if (!empty($remoteDirectory)) {
-                $key = str_replace('/', '', $remoteDirectory) . '/' .
-                    $prefix . $basename;
+                $key = str_replace('/', '', $remoteDirectory) . '/' . $basename;
             } else {
-                $key = $prefix . $basename;
+                $key = $basename;
             }
 
             try {
@@ -96,6 +95,7 @@ class S3Uploader
                         'Bucket' => $this->_bucket,
                         'Key' => $key,
                         'SourceFile' => $filename,
+                        'ACL' => 'public-read',
                     )
                 );
 
@@ -134,6 +134,14 @@ class S3Uploader
             $remoteDirectory = end($path);
             $uploaded = array();
 
+            // append prefix if it doesn't exist on directory name
+            $matches = array();
+            $pattern = '/^'. $prefix . '(.*)/';
+            $matched = preg_match($pattern, $remoteDirectory, $matches);
+            if (!$matched) {
+                $remoteDirectory = $prefix . $remoteDirectory;
+            }
+
             // TODO: improve this to handle recursive iteration
             $dir = new \FilesystemIterator($localDirectory);
             foreach ($dir as $fileinfo) {
@@ -141,11 +149,12 @@ class S3Uploader
 
                     // upload the files
                     $upload = $this->uploadFile(
-                        $fileinfo->getFilename(),
-                        $prefix . $remoteDirectory
+                        $localDirectory . DIRECTORY_SEPARATOR .
+                            $fileinfo->getFilename(),
+                        $remoteDirectory
                     );
 
-                    $uploaded[] = $upload;
+                    //$uploaded[] = $upload;
                 }
             }
 

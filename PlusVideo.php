@@ -13,6 +13,7 @@
 namespace VideoOtp\PlusVideo;
 
 use VideoOtp\S3Uploader;
+use VideoOtp\Xml;
 
 require_once 'S3Uploader.php';
 
@@ -28,18 +29,49 @@ require_once 'S3Uploader.php';
  */
 class PlusVideo
 {
-    private $_conf;
-    private $_accessKey;
-    private $_secretKey;
+    private $_s3Uploader;
+    private $_userValues;
+    private $_userConfFile;
 
     /**
      * [__construct description]
      */
-    public function __construct()
+    public function __construct($userConfFile, $defaultConfFile)
     {
-        $this->_conf = $this->loadConfig(__DIR__ . '/' . 'access.conf');
-        $this->_accessKey = $this->_conf->AWS->accessKey;
-        $this->_secretKey = $this->_conf->AWS->secretKey;
+        $access = $this->loadConfig(
+            __DIR__ . DIRECTORY_SEPARATOR . 'access.conf'
+        );
+
+        $this->_userValues = $this->_mergeConfFiles(
+            $userConfFile, $defaultConfFile
+        );
+
+        $this->_userConfFile = $userConfFile;
+
+        $this->_s3Uploader = new \VideoOtp\S3Uploader\S3Uploader($access);
+    }
+
+    public function uploadDirToS3($updatedContent)
+    {
+        $productionServer = $this->_userValues['VOTP_AD_PRODUCTION_SERVER'] .
+            '/' . $this->_userValues['VOTP_AD_CONTAINER'] . '/';
+        $preview = $productionServer . 'index.html';
+        $tag = $productionServer . 'd30_player.js';
+
+        $pathAndUrl = $this->getPathAndUrl();
+        $pathAndUrl['productionPreview'] = $preview;
+        $pathAndUrl['productionTag'] = $tag;
+
+        // update logo using production url
+        $logoUrl = $productionServer .
+            $this->_userValues['VOTP_AD_SPONSOR_LOGO'];
+        $updatedContent = $this->_updateLogoUrl($logoUrl, $updatedContent);
+
+        $this->_s3Uploader->uploadDirectory(
+            $pathAndUrl['localCreativeDir']
+        );
+
+        return $pathAndUrl;
     }
 
     /**
@@ -51,15 +83,11 @@ class PlusVideo
      */
     public function loadConfig($file)
     {
-        $source = $file;
-
-        if (file_exists($source)) {
-            $content = file_get_contents($source);
-            $data = json_decode($content);
-
+        try  {
+            $data = parse_ini_file($file);
             return $data;
-        } else {
-            echo $source;
+        } catch (Exception $e) {
+            throw new Exception($e->getMessage());
         }
 
         return false;
@@ -72,18 +100,29 @@ class PlusVideo
      *
      * @return mixed
      */
-    public function processJs($jsFile)
+    public function processJs($jsFile, $jsOutFile, $upload = false, $backup = false)
     {
-        $this->_createBackup($jsFile);
+        if ($backup) {
+            $this->_createBackup($this->_userConfFile);
+        }
 
         $jsFileContent = file_get_contents($jsFile);
-        // match all the configuration variable and put inside $contentVars
+
+        $userValues = $this->_userValues;
+
+        // TODO: vast specific: set the vast xml variable, move somewhere
+        if (!empty($userValues['VOTP_AD_VAST_XML_URL'])) {
+            $updatedContent = $this->_processVastXml(
+                $userValues['VOTP_AD_VAST_XML_URL'], $jsFileContent, $jsOutFile
+            );
+        }
+
+        // match all the conf variables on the js and put inside $contentVars
         $contentVars = array();
         $userVarPattern = '/^.*\bVOTP(.*)\b.*$/m';
-        preg_match_all($userVarPattern, $jsFileContent, $contentVars);
+        preg_match_all($userVarPattern, $updatedContent, $contentVars);
 
-        $replacements = $this->_mergeDefaultValues();
-
+        // extract the template vars from the js
         $patterns = array();
         if (isset($contentVars) && !empty($contentVars)) {
             foreach ($contentVars[1] as $v) {
@@ -92,12 +131,73 @@ class PlusVideo
             }
         }
 
+        // update logo path and return the updated js content
+        $pathAndUrl = $this->getPathAndUrl();
+        $logoUrl = $pathAndUrl['localTestServer'] . '/' .
+            $userValues['VOTP_AD_SPONSOR_LOGO'];
+
+        $updatedContent = $this->_updateLogoUrl($logoUrl, $updatedContent);
+
+        $replacements = array();
+        foreach($patterns as $k => $v) {
+
+            // trim non-existing keys on $userValues
+            if (isset($userValues[$k])) {
+                $replacements[$k] = $userValues[$k];
+            }
+
+            // empty user config variable will be reverted to template variable
+            if (empty($replacements[$k]) && $userValues[$k] != "0") {
+                $replacements[$k] = '{' . $k . '}';
+            }
+        }
+
         // always ksort both arrays when doing preg_replace
         ksort($patterns);
         ksort($replacements);
-        $updatedJs = preg_replace($patterns, $replacements, $jsFileContent);
+        // use the updated content $updatedContent
+        $updatedJs = preg_replace($patterns, $replacements, $updatedContent);
+        $result = file_put_contents($jsOutFile, $updatedJs);
 
-        file_put_contents($jsFile, $updatedJs);
+        // copy the index.html template to target directory for previewing
+        $indexTemplate = '..' . DIRECTORY_SEPARATOR . 'templates' .
+            DIRECTORY_SEPARATOR . 'index.html';
+
+        $absoluteCreativeDir = $pathAndUrl['localCreativeDir'];
+
+        copy(
+            $indexTemplate, $absoluteCreativeDir . DIRECTORY_SEPARATOR .
+                'index.html'
+        );
+
+
+        if ($upload === true) {
+            return $this->uploadDirToS3($updatedContent);
+        }
+
+        return $pathAndUrl;
+    }
+
+    public function getPathAndUrl()
+    {
+        $userValues = $this->_userValues;
+
+        $absoluteCreativeDir =  $userValues['VOTP_AD_LOCAL_DIRECTORY'] .
+            DIRECTORY_SEPARATOR . $userValues['VOTP_AD_CONTAINER'];
+        $localServer = $userValues['VOTP_AD_LOCAL_TEST_SERVER'] . '/' .
+            $userValues['VOTP_AD_CONTAINER'];
+
+        $data['localCreativeDir'] = $absoluteCreativeDir;
+        $data['localTestServer'] = $localServer;
+
+        return $data;
+    }
+
+    private function _updateLogoUrl($logoUrl, $updatedContent)
+    {
+        return preg_replace(
+            '/{VOTP_AD_SPONSOR_LOGO}/', $logoUrl, $updatedContent
+        );
     }
 
     /**
@@ -108,14 +208,18 @@ class PlusVideo
      *
      * @return [type]
      */
-    private function _mergeDefaultValues(
-        $defaultConfFile = 'defaults.conf',
-        $userConfFile = 'settings.conf'
-    ) {
-        $defaultValues = (array) $this->parseUserValues($defaultConfFile);
-        $userValues = (array) $this->parseUserValues($userConfFile);
+    private function _mergeConfFiles($userConfFile, $defaultConfFile) {
 
-        $mergedValues = array_merge($defaultValues, $userValues);
+        $userValues = $this->parseUserValues($userConfFile);
+        $defaultValues = $this->parseUserValues($defaultConfFile);
+
+        foreach($defaultValues as $k => $v) {
+            if (!empty($userValues[$k])) {
+                $mergedValues[$k] = $userValues[$k];
+            } else {
+                $mergedValues[$k] = $defaultValues[$k];
+            }
+        }
 
         return $mergedValues;
     }
@@ -128,41 +232,30 @@ class PlusVideo
      *
      * @return [type]
      */
-    public function parseUserValues($configFile = 'settings.conf')
+    public function parseUserValues($configFile)
     {
         return $this->loadConfig($configFile);
     }
 
     /**
-     * [getVastXmlFromJs description]
-     *
-     * @param string $path2D30Js ie. dir/d30_player.js
-     *
-     * @return mixed minified vastXML on success
-     *                false on failure
+     * TODO: Move this to another location
+     * @param  [type] $vastUrl       [description]
+     * @param  [type] $jsFileContent [description]
+     * @param  [type] $jsOutFile     [description]
+     * @return [type]                [description]
      */
-    public function getVastXmlFromJs($path2D30Js)
+    private function _processVastXml($vastUrl, $jsFileContent, $jsOutFile)
     {
-        if (file_exists($path2D30Js)) {
-            $source = file_get_contents($path2D30Js);
-        } else {
-            return false;
-        }
+        // TODO: vast specific: set the vast xml variable, move somewhere
+        $vastXml = trim($this->getVastXml($vastUrl));
 
-        $matches = array();
-        preg_match(
-            '/shortTail_D30.vastXML = \'\<\?xml(.*)/', $source, $matches
+        $updatedContent = preg_replace(
+            '/{CUSTOM_VAST_XML_CONTENT}/', $vastXml, $jsFileContent
         );
 
-        if (isset($matches[1]) AND !empty($matches[1])) {
-            // append the opening xml tag
-            $opXml = '<?xml';
-            $vastXml = $opXml . $matches[1];
+        file_put_contents($jsOutFile, $updatedContent);
 
-            return $vastXml;
-        }
-
-        return false;
+        return $updatedContent;
     }
 
     /**
@@ -178,9 +271,9 @@ class PlusVideo
         if (file_exists($file)) {
             // append timestamp on backup filename
             $pathInfo = pathinfo($file);
-            $backupFile = $pathInfo['dirname'] . '/' . $pathInfo['filename'] .
-                '.' . date('m-d-Y-h-i-s') . '.' . $pathInfo['extension'] .
-                '.bak';
+            $backupFile = $pathInfo['dirname'] . DIRECTORY_SEPARATOR .
+                $pathInfo['filename'] . '.' . date('m-d-Y-h-i-s') . '.' .
+                $pathInfo['extension'] . '.bak';
 
             if (!copy($file, $backupFile)) {
                 throw new \Exception(
@@ -189,14 +282,59 @@ class PlusVideo
             }
 
             return $backupFile;
-
-        } else {
-            throw new \Exception(
-                sprintf('File "%s" doesn\'t exist', $file)
-            );
         }
 
         return false;
     }
+
+    public function getVastXml($url)
+    {
+        $vastXml = simplexml_load_file($url);
+        $d30Config = new \SimpleXMLElement($vastXml->asXML());
+
+        $extension = $d30Config->Ad->InLine->Extensions->addChild('Extension');
+        $extension->addAttribute('type', 'D30Config');
+
+        $extension->addChild('BaseColor', '\' + shortTail_D30.AD_BASE_COLOR + \'');
+        $extension->addChild('FontColor', '\' + shortTail_D30.AD_FONT_COLOR + \'');
+        $extension->addChild('ProgressColor', '\' + shortTail_D30.AD_PROGRESS_COLOR + \'');
+        $extension->addChild('SponsorExtrasBgrndColor', '\' + shortTail_D30.AD_SPONSOR_BG_COLOR + \'');
+        $extension->addChild('AutoPlay', '\' + shortTail_D30.AD_AUTOPLAY + \'');
+        $extension->addChild('Volume', '\' + shortTail_D30.AD_VOLUME + \'');
+        $extension->addChild('Muted', '\' + shortTail_D30.AD_MUTED + \'');
+
+        $extension->addChild('SecsAllowedToView', '\' + shortTail_D30.AD_AUTO_PAUSE_VIDEO + \'');
+        $extension->addChild('SecsAllowedToViewCloseDelay', '\' + shortTail_D30.AD_CLICK_TO_CONTINUE + \'');
+        $extension->addChild('SecsAllowedToViewLabel', '\' + shortTail_D30.AD_C_TO_CONTINUE_TXT + \'');
+        $extension->addChild('AdCountdownLabel', '\' + shortTail_D30.AD_COUNTDOWN_LABEL + \'');
+        $extension->addChild('SecsRequiredToView', '\' + shortTail_D30.AD_REQ_VIEWING_TIME + \'');
+
+        $extension->addChild('LogoVisible', 'false');
+        $extension->addChild('LogoSecsVisible', '0');
+        $extension->addChild('ScaleMode', 'uniform');
+        $extension->addChild('VMEnabled', 'false');
+        $extension->addChild('SponsorByLabel', '\' + shortTail_D30.AD_SPONSOR_BY_LABEL + \'');
+        $extension->addChild('SponsorExtrasLabel');
+
+        $creative = $d30Config->Ad->InLine->Creatives->addChild('Creative');
+        $creative->addAttribute('id', 'Companion');
+        $companionAds = $creative->addChild('CompanionAds');
+        $companion = $companionAds->addChild('Companion');
+        $companion->addAttribute('id', 'sponsor');
+        $companion->addAttribute('width', '88');
+        $companion->addAttribute('height', '31');
+
+        $staticResource = $companion->addChild('StaticResource', '\' + shortTail_D30.AD_SPONSOR_LOGO + \'');
+        $staticResource->addAttribute('creativeType', 'image/jpg');
+        $companion->addChild('CompanionClickThrough', '\' + shortTail_D30.AD_SPONSOR_LOGO_LINK + \'');
+
+        $companion->addChild('AltText', 'Us');
+        $companion->addChild('AdParameters');
+
+        $minXml = preg_replace('/>\s+</', '><', $d30Config->asXML());
+
+        return $minXml;
+    }
 }
+
 
