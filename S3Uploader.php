@@ -125,7 +125,7 @@ class S3Uploader
      * @return mixed Array of uploaded files on success
      *               false on failure
      */
-    public function uploadDirectory($localDirectory, $prefix = "a-")
+    public function uploadDirectory($localDirectory, $prefix = "")
     {
         if (file_exists($localDirectory) && is_dir($localDirectory)) {
 
@@ -134,6 +134,7 @@ class S3Uploader
             $remoteDirectory = end($path);
             $uploaded = array();
 
+            /*
             // append prefix if it doesn't exist on directory name
             $matches = array();
             $pattern = '/^'. $prefix . '(.*)/';
@@ -141,6 +142,7 @@ class S3Uploader
             if (!$matched) {
                 $remoteDirectory = $prefix . $remoteDirectory;
             }
+            */
 
             // TODO: improve this to handle recursive iteration
             $dir = new \FilesystemIterator($localDirectory);

@@ -83,14 +83,13 @@ class PlusVideo
      */
     public function loadConfig($file)
     {
-        try  {
-            $data = parse_ini_file($file);
+        if ($data = @parse_ini_file($file)) {
             return $data;
-        } catch (Exception $e) {
-            throw new Exception($e->getMessage());
         }
 
-        return false;
+        echo 'Not a config file ' . $file;
+        echo '<br><a href="index.php">Back</a>';
+        exit;
     }
 
     /**
@@ -171,7 +170,7 @@ class PlusVideo
         );
 
 
-        if ($upload === true) {
+        if ($upload == true) {
             return $this->uploadDirToS3($updatedContent);
         }
 
