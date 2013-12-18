@@ -53,25 +53,39 @@ class PlusVideo
 
     public function uploadDirToS3($updatedContent)
     {
+        $scriptFilename = 'd30_player.js';
+
         $productionServer = $this->_userValues['VOTP_AD_PRODUCTION_SERVER'] .
             '/' . $this->_userValues['VOTP_AD_CONTAINER'] . '/';
         $preview = $productionServer . 'index.html';
-        $tag = $productionServer . 'd30_player.js';
+        $tag = $productionServer . $scriptFilename;
 
         $pathAndUrl = $this->getPathAndUrl();
         $pathAndUrl['productionPreview'] = $preview;
         $pathAndUrl['productionTag'] = $tag;
 
+        //TODO: vast specific
         // update logo using production url
-        $logoUrl = $productionServer .
-            $this->_userValues['VOTP_AD_SPONSOR_LOGO'];
-        $updatedContent = $this->_updateLogoUrl($logoUrl, $updatedContent);
+        if ($this->_userValues['VOTP_AD_TYPE'] == 'vast') {
+            $logoUrl = $productionServer .
+                $this->_userValues['VOTP_AD_SPONSOR_LOGO'];
+            $updatedContent = $this->_updateLogoUrl($logoUrl, $updatedContent);
+        } else if ($this->_userValues['VOTP_AD_TYPE'] == 'image') {
+            //TODO: image specific
+            $imgUrl = $productionServer .
+                $this->_userValues['VOTP_AD_IMAGE_FILENAME'];
+            $updatedContent = $this->_updateImageUrl($imgUrl, $updatedContent);
+        }
 
         $this->_s3Uploader->uploadDirectory(
             $pathAndUrl['localCreativeDir']
         );
 
-        return $pathAndUrl;
+        $data = array();
+        $data['productionPreview'] = $preview;
+        $data['productionTag'] = $tag;
+
+        return $data;
     }
 
     /**
@@ -99,21 +113,28 @@ class PlusVideo
      *
      * @return mixed
      */
-    public function processJs($jsFile, $jsOutFile, $upload = false, $backup = false)
+    public function processJs(
+        $jsFile, $jsOutFile, $upload = "false", $backup = "false"
+    )
     {
-        if ($backup) {
+        if ($backup == "true") {
             $this->_createBackup($this->_userConfFile);
         }
 
         $jsFileContent = file_get_contents($jsFile);
 
         $userValues = $this->_userValues;
+        $pathAndUrl = $this->getPathAndUrl();
 
         // TODO: vast specific: set the vast xml variable, move somewhere
-        if (!empty($userValues['VOTP_AD_VAST_XML_URL'])) {
+        if ($userValues['VOTP_AD_TYPE'] == 'vast' &&
+            !empty($userValues['VOTP_AD_VAST_XML_URL'])) {
             $updatedContent = $this->_processVastXml(
                 $userValues['VOTP_AD_VAST_XML_URL'], $jsFileContent, $jsOutFile
             );
+        } else {
+            // use the jsFileContent since we don't need to process vast xml
+            $updatedContent = $jsFileContent;
         }
 
         // match all the conf variables on the js and put inside $contentVars
@@ -130,12 +151,21 @@ class PlusVideo
             }
         }
 
-        // update logo path and return the updated js content
-        $pathAndUrl = $this->getPathAndUrl();
-        $logoUrl = $pathAndUrl['localTestServer'] . '/' .
-            $userValues['VOTP_AD_SPONSOR_LOGO'];
 
-        $updatedContent = $this->_updateLogoUrl($logoUrl, $updatedContent);
+        // TODO: vast specific
+        // update logo path and return the updated js content
+        if ($upload != "true") {
+            if ($userValues['VOTP_AD_TYPE'] == 'vast') {
+                $logoUrl = $pathAndUrl['localTestServer'] . '/' .
+                    $userValues['VOTP_AD_SPONSOR_LOGO'];
+                $updatedContent = $this->_updateLogoUrl($logoUrl, $updatedContent);
+            } else if ($userValues['VOTP_AD_TYPE'] == 'image') {
+                // TODO: image specific
+                $imageUrl = $pathAndUrl['localTestServer'] . '/' .
+                    $userValues['VOTP_AD_IMAGE_FILENAME'];
+                $updatedContent = $this->_updateImageUrl($imageUrl, $updatedContent);
+            }
+        }
 
         $replacements = array();
         foreach($patterns as $k => $v) {
@@ -170,11 +200,12 @@ class PlusVideo
         );
 
 
-        if ($upload == true) {
+        if ($upload == "true") {
             return $this->uploadDirToS3($updatedContent);
         }
 
-        return $pathAndUrl;
+        $data['localTestServer'] = $pathAndUrl['localTestServer'];
+        return $data;
     }
 
     public function getPathAndUrl()
@@ -186,16 +217,33 @@ class PlusVideo
         $localServer = $userValues['VOTP_AD_LOCAL_TEST_SERVER'] . '/' .
             $userValues['VOTP_AD_CONTAINER'];
 
+        if (!file_exists($absoluteCreativeDir)) {
+            mkdir($absoluteCreativeDir, 0777, true);
+        }
+
         $data['localCreativeDir'] = $absoluteCreativeDir;
         $data['localTestServer'] = $localServer;
+
+        if (isset($userValues['VOTP_AD_SPONSOR_LOGO'])) {
+            $logoFilename = $userValues['VOTP_AD_SPONSOR_LOGO'];
+            $data['logoFilename'] = $logoFilename;
+        }
 
         return $data;
     }
 
+    //TODO: vast specific
     private function _updateLogoUrl($logoUrl, $updatedContent)
     {
         return preg_replace(
             '/{VOTP_AD_SPONSOR_LOGO}/', $logoUrl, $updatedContent
+        );
+    }
+
+    //TODO: image specific
+    private function _updateImageUrl($imageUrl, $updatedContent) {
+        return preg_replace(
+            '/{VOTP_AD_IMAGE_FILENAME}/', $imageUrl, $updatedContent
         );
     }
 
@@ -238,6 +286,7 @@ class PlusVideo
 
     /**
      * TODO: Move this to another location
+     * TODO: for removal, now using dynamic data
      * @param  [type] $vastUrl       [description]
      * @param  [type] $jsFileContent [description]
      * @param  [type] $jsOutFile     [description]
@@ -288,8 +337,12 @@ class PlusVideo
 
     public function getVastXml($url)
     {
-        $vastXml = simplexml_load_file($url);
+        $vastXml = simplexml_load_file(($url));
         $d30Config = new \SimpleXMLElement($vastXml->asXML());
+
+		if (empty($d30Config->Ad->InLine->Extensions)) {
+			$d30Config->Ad->InLine->addChild('Extensions');
+		}
 
         $extension = $d30Config->Ad->InLine->Extensions->addChild('Extension');
         $extension->addAttribute('type', 'D30Config');

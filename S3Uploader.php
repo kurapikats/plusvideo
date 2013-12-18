@@ -163,9 +163,12 @@ class S3Uploader
             return $uploaded;
 
         } else {
-            throw new \Exception(
+            /*throw new \Exception(
                 sprintf('Directory "%s" doesn\'t exist', $localDirectory)
-            );
+            );*/
+            echo "Directory $localDirectory doesn't exist.";
+            echo '<br><a href="index.php">Back</a>';
+            exit;
         }
 
         return false;

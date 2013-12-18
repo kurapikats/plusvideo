@@ -12,6 +12,9 @@
  */
 namespace VideoOtp\PlusVideo;
 
+/*use Aws\CloudFront\CloudFrontClient;
+require_once '../libraries' . DIRECTORY_SEPARATOR . 'aws.phar';
+*/
 require_once '../PlusVideo.php';
 
 $userSettings = 'settings.vast.user.conf';
@@ -19,7 +22,6 @@ $defaultSettings = 'settings.vast.defaults.conf';
 $votp = new PlusVideo($userSettings, $defaultSettings);
 
 $pathAndUrl = $votp->getPathAndUrl();
-//$pathAndUrl['localTestServer'];
 
 $jsTemplate = '..' . DIRECTORY_SEPARATOR . 'templates' . DIRECTORY_SEPARATOR . 'vast.js';
 
@@ -29,3 +31,28 @@ $result = $votp->processJs($jsTemplate, $jsOutFile, true, false);
 
 print_r($result);
 
+
+
+/*$client = CloudFrontClient::factory(
+    array(
+        'key' => 'AKIAJZ3AOW4F3JJ2H6DA',
+        'secret' => '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'
+    )
+);
+
+var_dump($client);
+exit; */
+/*
+$result = $client->createInvalidation(array(
+    // DistributionId is required
+    'DistributionId' => 'string',
+    // Paths is required
+    'Paths' => array(
+        // Quantity is required
+        'Quantity' => integer,
+        'Items' => array('string', ... ),
+    ),
+    // CallerReference is required
+    'CallerReference' => 'string',
+));
+*/
