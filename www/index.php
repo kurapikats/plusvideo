@@ -9,82 +9,22 @@ if (isset($_POST['upload'])
 
     $uploadDir = 'uploads/';
     $userConfigFile = $_FILES['user_settings']['name'] . '-' . date('mdy-his');
+    $userSettings = $uploadDir . $userConfigFile;
 
     // move user config file to uploads directory
-    move_uploaded_file($_FILES["user_settings"]["tmp_name"],
-        $uploadDir . $userConfigFile);
+    move_uploaded_file($_FILES["user_settings"]["tmp_name"], $userSettings);
 
-    $userSettings = $uploadDir . $userConfigFile;
-    $usrConf = parse_ini_file($userSettings);
+    $votp = new PlusVideo($userSettings);
 
-    // get the appropriate default config file
-    $defaultSettings = '../templates/settings.' . $usrConf['VOTP_AD_TYPE'] .
-        '.defaults.conf';
-
-    $votp = new PlusVideo($userSettings, $defaultSettings);
-
-    $pathAndUrl = $votp->getPathAndUrl();
-
-    $jsTemplate = '..' . DIRECTORY_SEPARATOR . 'templates' .
-        DIRECTORY_SEPARATOR . $usrConf['VOTP_AD_TYPE'] . '.js';
-
-    $localCreativeDir = $pathAndUrl['localCreativeDir'] . DIRECTORY_SEPARATOR;
-
-    $jsOutFile = $localCreativeDir . 'd30_player.js';
-
-    // TODO: VAST specific?
-    // move the logo to creatives directory
-    if ($_FILES['ad_image']['error'] == 0 &&
-        $_FILES['ad_image']['size'] > 0) {
-
-        if (isset($pathAndUrl['logoFilename'])) {
-            $filename = $pathAndUrl['logoFilename'];
-        } else {
-            $filename = $_FILES['ad_image']['name'];
-        }
-
-        $fileUri = $localCreativeDir . $filename;
-        move_uploaded_file($_FILES['ad_image']['tmp_name'], $fileUri);
-    } else {
-        //use the 1x1 gif
-        $img1x1 = __DIR__ . '/../assets/1x1.gif';
-        copy($img1x1, $localCreativeDir . $pathAndUrl['logoFilename']);
+    // if success file upload, move the image to creatives directory
+    if ($_FILES['ad_image']['error'] == 0 && $_FILES['ad_image']['size'] > 0) {
+        $this->renameUploadedFile($_FILES);
     }
 
-    $defConf = parse_ini_file($defaultSettings);
+    // should we upload to cdn (production)?
+    $upload = (isset($_POST['production'])?$_POST['production']:"false");
 
-    // TODO: VAST specific?
-    // rename the uploaded logo based on the filename on the user config file
-    // if the user uploaded a logo  and didn't specify a filename on the config
-    // use the default logo filename from default config variable
-    if ($usrConf['VOTP_AD_TYPE'] == 'vast') {
-        if (isset($usrConf['VOTP_AD_SPONSOR_LOGO']) &&
-            !empty($usrConf['VOTP_AD_SPONSOR_LOGO'])) {
-            $newLogoFilename = $localCreativeDir . $usrConf['VOTP_AD_SPONSOR_LOGO'];
-        } else {
-            $newLogoFilename = $localCreativeDir . $defConf['VOTP_AD_SPONSOR_LOGO'];
-        }
-    } else {
-        // use filename from image conf file
-        $newLogoFilename = $localCreativeDir . $defConf['VOTP_AD_IMAGE_FILENAME'];
-    }
-
-    //var_dump($_FILES['ad_image']['name'], $defConf['VOTP_AD_IMAGE_FILENAME']);
-    //var_dump($logoFilename, $newLogoFilename)
-    //exit;
-
-    // TODO: VAST specific?
-    if (!empty($_FILES['ad_image']['name'])) {
-        rename($fileUri, $newLogoFilename);
-    }
-
-    if (!isset($_POST['production'])) {
-        $upload = "false";
-    } else {
-        $upload = $_POST['production'];
-    }
-
-    $uploadResult = $votp->processJs($jsTemplate, $jsOutFile, $upload);
+    $uploadResult = $votp->processJs($upload);
 }
 
 ?>
