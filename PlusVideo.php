@@ -1,4 +1,5 @@
 <?php
+
 /**
  * PlusVideo: Combine config and upload to S3 and Cloudfront
  *
@@ -7,25 +8,22 @@
  * @author    Jesus B. Nana <jesus.nana@adtouch.com>
  * @copyright 2013 VideoOTP
  * @license   [url] [description]
- * @version   0.1
- * @link      http://videootp.com
+ * @version   0.2
+ * @link      http://www.videootp.com
  */
 namespace VideoOtp\PlusVideo;
-
-use VideoOtp\S3Uploader;
-use VideoOtp\Xml;
 
 require_once 'S3Uploader.php';
 
 /**
- * S3 Uploader
+ * PlusVideo
  *
- * @category S3
- * @package  Amazon
+ * @category Advertising
+ * @package  VideoOtp
  * @author   Jesus B. Nana <jesus.nana@adtouch.com>
  * @license  [url] [description]
- * @version  0.1
- * @link     http://videootp.com
+ * @version  0.2
+ * @link     http://www.videootp.com
  */
 class PlusVideo
 {
@@ -34,23 +32,31 @@ class PlusVideo
     private $_userConfFile;
 
     /**
-     * [__construct description]
+     * Load and merge the user and default config file
+     *
+     * @param string $userConfFile Full path of the uploaded user config file
      */
-    public function __construct($userConfFile, $defaultConfFile)
+    public function __construct($userConfFile)
     {
         $access = $this->loadConfig(
             __DIR__ . DIRECTORY_SEPARATOR . 'access.conf'
         );
 
-        $this->_userValues = $this->_mergeConfFiles(
-            $userConfFile, $defaultConfFile
-        );
+        // merge users config to it's default config file
+        $this->_userValues = $this->_mergeConfFiles($userConfFile);
 
         $this->_userConfFile = $userConfFile;
 
         $this->_s3Uploader = new \VideoOtp\S3Uploader\S3Uploader($access);
     }
 
+    /**
+     * Upload the target directory to Amazon S3
+     *
+     * @param string $updatedContent Content of the JS file
+     *
+     * @return mixed URL of the preview tag and the js file
+     */
     public function uploadDirToS3($updatedContent)
     {
         $scriptFilename = 'd30_player.js';
@@ -67,14 +73,14 @@ class PlusVideo
         //TODO: vast specific
         // update logo using production url
         if ($this->_userValues['VOTP_AD_TYPE'] == 'vast') {
-            $logoUrl = $productionServer .
+            $logoFilename = $productionServer .
                 $this->_userValues['VOTP_AD_SPONSOR_LOGO'];
-            $updatedContent = $this->_updateLogoUrl($logoUrl, $updatedContent);
+            $updatedContent = $this->_updateLogoConf($logoFilename, $updatedContent);
         } else if ($this->_userValues['VOTP_AD_TYPE'] == 'image') {
             //TODO: image specific
             $imgUrl = $productionServer .
                 $this->_userValues['VOTP_AD_IMAGE_FILENAME'];
-            $updatedContent = $this->_updateImageUrl($imgUrl, $updatedContent);
+            $updatedContent = $this->_updateImageFilename($imgUrl, $updatedContent);
         }
 
         $this->_s3Uploader->uploadDirectory(
@@ -89,11 +95,11 @@ class PlusVideo
     }
 
     /**
-     * [loadConfig description]
+     * Load the config file
      *
-     * @param string $file [comment]
+     * @param string $file Full path of the config file
      *
-     * @return [type]
+     * @return mixed Parsed config file
      */
     public function loadConfig($file)
     {
@@ -109,33 +115,27 @@ class PlusVideo
     /**
      * Pass the js file to process
      *
-     * @param string $jsFile relative path of js file
+     * @param boolean $upload Upload to CDN
+     * @param boolean $backup Enable backup
      *
-     * @return mixed
+     * @return mixed Test and CDN URL for Preview and JS Tag
      */
-    public function processJs(
-        $jsFile, $jsOutFile, $upload = "false", $backup = "false"
-    )
+    public function processJs($upload = "false", $backup = "false")
     {
         if ($backup == "true") {
             $this->_createBackup($this->_userConfFile);
         }
 
+        $jsFile = $this->getTemplateFile();
         $jsFileContent = file_get_contents($jsFile);
+
+        $jsOutFile = $this->getD30FilePath();
 
         $userValues = $this->_userValues;
         $pathAndUrl = $this->getPathAndUrl();
 
-        // TODO: vast specific: set the vast xml variable, move somewhere
-        if ($userValues['VOTP_AD_TYPE'] == 'vast' &&
-            !empty($userValues['VOTP_AD_VAST_XML_URL'])) {
-            $updatedContent = $this->_processVastXml(
-                $userValues['VOTP_AD_VAST_XML_URL'], $jsFileContent, $jsOutFile
-            );
-        } else {
-            // use the jsFileContent since we don't need to process vast xml
-            $updatedContent = $jsFileContent;
-        }
+        // use the jsFileContent since we don't need to process vast xml
+        $updatedContent = $jsFileContent;
 
         // match all the conf variables on the js and put inside $contentVars
         $contentVars = array();
@@ -151,24 +151,27 @@ class PlusVideo
             }
         }
 
-
         // TODO: vast specific
         // update logo path and return the updated js content
         if ($upload != "true") {
             if ($userValues['VOTP_AD_TYPE'] == 'vast') {
-                $logoUrl = $pathAndUrl['localTestServer'] . '/' .
+                $logoFilename = $pathAndUrl['localTestServer'] . '/' .
                     $userValues['VOTP_AD_SPONSOR_LOGO'];
-                $updatedContent = $this->_updateLogoUrl($logoUrl, $updatedContent);
+                $updatedContent = $this->_updateLogoConf(
+                    $logoFilename, $updatedContent
+                );
             } else if ($userValues['VOTP_AD_TYPE'] == 'image') {
                 // TODO: image specific
-                $imageUrl = $pathAndUrl['localTestServer'] . '/' .
+                $imageFilename = $pathAndUrl['localTestServer'] . '/' .
                     $userValues['VOTP_AD_IMAGE_FILENAME'];
-                $updatedContent = $this->_updateImageUrl($imageUrl, $updatedContent);
+                $updatedContent = $this->_updateImageFilename(
+                    $imageFilename, $updatedContent
+                );
             }
         }
 
         $replacements = array();
-        foreach($patterns as $k => $v) {
+        foreach ($patterns as $k => $v) {
 
             // trim non-existing keys on $userValues
             if (isset($userValues[$k])) {
@@ -196,18 +199,23 @@ class PlusVideo
 
         copy(
             $indexTemplate, $absoluteCreativeDir . DIRECTORY_SEPARATOR .
-                'index.html'
+            'index.html'
         );
-
 
         if ($upload == "true") {
             return $this->uploadDirToS3($updatedContent);
         }
 
         $data['localTestServer'] = $pathAndUrl['localTestServer'];
+
         return $data;
     }
 
+    /**
+     * Get the Local path and Test URL of the creative
+     *
+     * @return mixed Local path and Test server url
+     */
     public function getPathAndUrl()
     {
         $userValues = $this->_userValues;
@@ -224,7 +232,8 @@ class PlusVideo
         $data['localCreativeDir'] = $absoluteCreativeDir;
         $data['localTestServer'] = $localServer;
 
-        if (isset($userValues['VOTP_AD_SPONSOR_LOGO'])) {
+        // TODO: move this somewhere
+        if (!empty($userValues['VOTP_AD_SPONSOR_LOGO'])) {
             $logoFilename = $userValues['VOTP_AD_SPONSOR_LOGO'];
             $data['logoFilename'] = $logoFilename;
         }
@@ -232,35 +241,54 @@ class PlusVideo
         return $data;
     }
 
-    //TODO: vast specific
-    private function _updateLogoUrl($logoUrl, $updatedContent)
+    /**
+     * Replace the logo url based on user settings
+     *
+     * @param string $logoFilename   Filename of the logo
+     * @param string $updatedContent Content of the JS template
+     *
+     * @return string Updated JS content
+     */
+    private function _updateLogoConf($logoFilename, $updatedContent)
     {
         return preg_replace(
-            '/{VOTP_AD_SPONSOR_LOGO}/', $logoUrl, $updatedContent
-        );
-    }
-
-    //TODO: image specific
-    private function _updateImageUrl($imageUrl, $updatedContent) {
-        return preg_replace(
-            '/{VOTP_AD_IMAGE_FILENAME}/', $imageUrl, $updatedContent
+            '/{VOTP_AD_SPONSOR_LOGO}/', $logoFilename, $updatedContent
         );
     }
 
     /**
-     * Alias of loadConfig(), get the user's configurations
+     * Replace the logo url based on user settings
      *
-     * @param string $defaultConfFile path to config file
-     * @param string $userConfFile    path to config file
+     * @param string $imageFilename  Filename of the logo
+     * @param string $updatedContent Content of the JS template
      *
-     * @return [type]
+     * @return string Updated JS content
      */
-    private function _mergeConfFiles($userConfFile, $defaultConfFile) {
+    private function _updateImageFilename($imageFilename, $updatedContent)
+    {
+        return preg_replace(
+            '/{VOTP_AD_IMAGE_FILENAME}/', $imageFilename, $updatedContent
+        );
+    }
 
+    /**
+     * Merge the user config file with the default
+     * If user didn't specify a value for a configuration it will use the
+     * default settings
+     *
+     * @param string $userConfFile Full path of the config file
+     *
+     * @return mixed Merged values of the config files
+     */
+    private function _mergeConfFiles($userConfFile)
+    {
         $userValues = $this->parseUserValues($userConfFile);
+
+        $defaultConfFile = $this->getDefaultConfFile($userValues);
+
         $defaultValues = $this->parseUserValues($defaultConfFile);
 
-        foreach($defaultValues as $k => $v) {
+        foreach ($defaultValues as $k => $v) {
             if (!empty($userValues[$k])) {
                 $mergedValues[$k] = $userValues[$k];
             } else {
@@ -271,13 +299,12 @@ class PlusVideo
         return $mergedValues;
     }
 
-
     /**
      * Alias of loadConfig(), get the user's configurations
      *
-     * @param string $configFile path to config file
+     * @param string $configFile Full path to config file
      *
-     * @return [type]
+     * @return mixed Parsed config file
      */
     public function parseUserValues($configFile)
     {
@@ -285,34 +312,12 @@ class PlusVideo
     }
 
     /**
-     * TODO: Move this to another location
-     * TODO: for removal, now using dynamic data
-     * @param  [type] $vastUrl       [description]
-     * @param  [type] $jsFileContent [description]
-     * @param  [type] $jsOutFile     [description]
-     * @return [type]                [description]
-     */
-    private function _processVastXml($vastUrl, $jsFileContent, $jsOutFile)
-    {
-        // TODO: vast specific: set the vast xml variable, move somewhere
-        $vastXml = trim($this->getVastXml($vastUrl));
-
-        $updatedContent = preg_replace(
-            '/{CUSTOM_VAST_XML_CONTENT}/', $vastXml, $jsFileContent
-        );
-
-        file_put_contents($jsOutFile, $updatedContent);
-
-        return $updatedContent;
-    }
-
-    /**
-     * Creates a backup of the target file
+     * Creates a backup of the target file, append timestamp and .bak
+     * on the backup file
      *
-     * @param string $file [description]
+     * @param string $file Full path of the file to backup
      *
-     * @return $mixed filename of the backup file on success
-     *                false on failure
+     * @return $mixed filename of the backup file on success, false on failure
      */
     private function _createBackup($file)
     {
@@ -335,58 +340,112 @@ class PlusVideo
         return false;
     }
 
-    public function getVastXml($url)
+    /**
+     * Rename the uploaded logo based on the filename on the user config file
+     *
+     * @param mixed $uploadedFile File info from $_FILES
+     *
+     * @return boolean True on successful file upload
+     */
+    public function renameUploadedFile($uploadedFile)
     {
-        $vastXml = simplexml_load_file(($url));
-        $d30Config = new \SimpleXMLElement($vastXml->asXML());
+        $pathAndUrl = $this->getPathAndUrl();
 
-		if (empty($d30Config->Ad->InLine->Extensions)) {
-			$d30Config->Ad->InLine->addChild('Extensions');
-		}
+        if (isset($pathAndUrl['logoFilename'])) {
+            $filename = $pathAndUrl['logoFilename'];
+        } else {
+            $filename = $uploadedFile['ad_image']['name'];
+        }
 
-        $extension = $d30Config->Ad->InLine->Extensions->addChild('Extension');
-        $extension->addAttribute('type', 'D30Config');
+        $fileUri = $pathAndUrl['localCreativeDir'] . $filename;
+        move_uploaded_file($uploadedFile['ad_image']['tmp_name'], $fileUri);
 
-        $extension->addChild('BaseColor', '\' + shortTail_D30.AD_BASE_COLOR + \'');
-        $extension->addChild('FontColor', '\' + shortTail_D30.AD_FONT_COLOR + \'');
-        $extension->addChild('ProgressColor', '\' + shortTail_D30.AD_PROGRESS_COLOR + \'');
-        $extension->addChild('SponsorExtrasBgrndColor', '\' + shortTail_D30.AD_SPONSOR_BG_COLOR + \'');
-        $extension->addChild('AutoPlay', '\' + shortTail_D30.AD_AUTOPLAY + \'');
-        $extension->addChild('Volume', '\' + shortTail_D30.AD_VOLUME + \'');
-        $extension->addChild('Muted', '\' + shortTail_D30.AD_MUTED + \'');
+        // move the uploaded file to target path and filename
+        $imageFilename = $votp->getImageFilename();
 
-        $extension->addChild('SecsAllowedToView', '\' + shortTail_D30.AD_AUTO_PAUSE_VIDEO + \'');
-        $extension->addChild('SecsAllowedToViewCloseDelay', '\' + shortTail_D30.AD_CLICK_TO_CONTINUE + \'');
-        $extension->addChild('SecsAllowedToViewLabel', '\' + shortTail_D30.AD_C_TO_CONTINUE_TXT + \'');
-        $extension->addChild('AdCountdownLabel', '\' + shortTail_D30.AD_COUNTDOWN_LABEL + \'');
-        $extension->addChild('SecsRequiredToView', '\' + shortTail_D30.AD_REQ_VIEWING_TIME + \'');
+        return rename($fileUri, $imageFilename);
+    }
 
-        $extension->addChild('LogoVisible', 'false');
-        $extension->addChild('LogoSecsVisible', '0');
-        $extension->addChild('ScaleMode', 'uniform');
-        $extension->addChild('VMEnabled', 'false');
-        $extension->addChild('SponsorByLabel', '\' + shortTail_D30.AD_SPONSOR_BY_LABEL + \'');
-        $extension->addChild('SponsorExtrasLabel');
+    /**
+     * Renames the uploaded logo based on the filename on the user config file
+     * if the user uploaded a logo and didn't specify a filename on the config
+     * use the default logo filename from it's default config file
+     *
+     * @return mixed Filename of the Logo
+     */
+    public function vastGetLogoFilename()
+    {
+        $pathAndUrl = $this->getPathAndUrl();
 
-        $creative = $d30Config->Ad->InLine->Creatives->addChild('Creative');
-        $creative->addAttribute('id', 'Companion');
-        $companionAds = $creative->addChild('CompanionAds');
-        $companion = $companionAds->addChild('Companion');
-        $companion->addAttribute('id', 'sponsor');
-        $companion->addAttribute('width', '88');
-        $companion->addAttribute('height', '31');
+        $logoFilename = $pathAndUrl['localCreativeDir'] .
+            $this->_userValues['VOTP_AD_SPONSOR_LOGO'];
 
-        $staticResource = $companion->addChild('StaticResource', '\' + shortTail_D30.AD_SPONSOR_LOGO + \'');
-        $staticResource->addAttribute('creativeType', 'image/jpg');
-        $companion->addChild('CompanionClickThrough', '\' + shortTail_D30.AD_SPONSOR_LOGO_LINK + \'');
+        if (!empty($this->_userValues['VOTP_AD_SPONSOR_LOGO'])) {
+            return $logoFilename;
+        }
 
-        $companion->addChild('AltText', 'Us');
-        $companion->addChild('AdParameters');
+        return false;
+    }
 
-        $minXml = preg_replace('/>\s+</', '><', $d30Config->asXML());
+    /**
+     * Get the Image filename, this can be logo or bg image
+     * If VOTP_AD_TYPE is vast use image as logo, if not use it as bg image
+     *
+     * @return string Full path of the image file
+     */
+    public function getImageFilename()
+    {
+        if ($this->_userValues['VOTP_AD_TYPE'] == 'vast') {
+            $imageFilename = $this->vastGetLogoFilename();
+        } else {
+            // use filename from image conf file
+            $imageFilename = $pathAndUrl['localCreativeDir'] .
+                $this->_userValues['VOTP_AD_IMAGE_FILENAME'];
+        }
 
-        return $minXml;
+        return $imageFilename;
+    }
+
+    /**
+     * Get the local path for d30 player
+     *
+     * @return string Full path of d30_player.js
+     */
+    public function getD30FilePath()
+    {
+        $pathAndUrl = $this->getPathAndUrl();
+        $localCreativeDir = $pathAndUrl['localCreativeDir'] .
+            DIRECTORY_SEPARATOR;
+
+        return $localCreativeDir . 'd30_player.js';
+    }
+
+    /**
+     * Get the JS template file
+     *
+     * @return string Full path of the js template file
+     */
+    public function getTemplateFile()
+    {
+        $jsTemplate = '..' . DIRECTORY_SEPARATOR . 'templates' .
+        DIRECTORY_SEPARATOR . $this->_userValues['VOTP_AD_TYPE'] . '.js';
+
+        return $jsTemplate;
+    }
+
+    /**
+     * Get the default configuration for the template
+     *
+     * @param mixed $userValues Parsed ini configuration
+     *
+     * @return string Full path of the matching config file
+     */
+    public function getDefaultConfFile($userValues)
+    {
+        // get the appropriate default template config file
+        $defaultSettings = '../templates/settings.' .
+            $userValues['VOTP_AD_TYPE'] . '.defaults.conf';
+
+        return $defaultSettings;
     }
 }
-
-
